@@ -1,3 +1,10 @@
+import asyncio
+
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 import os
 import html
 from aiohttp import web
@@ -149,12 +156,10 @@ async def preview_route(request):
 
 
 async def setup_bot_commands():
-    # সাধারণ ইউজাররা শুধু /start দেখবে
     await bot.set_bot_commands(
         [BotCommand("start", "Start Bot")],
         scope=BotCommandScopeAllPrivateChats()
     )
-    # শুধুমাত্র অ্যাডমিন সব কমান্ড দেখবে
     admin_cmds = [
         BotCommand("post", "Create New Movie Post"),
         BotCommand("player", "Upload Video to Streamtape"),
@@ -188,4 +193,5 @@ async def start_services():
 
 
 if __name__ == "__main__":
-    bot.run(start_services())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(start_services())
