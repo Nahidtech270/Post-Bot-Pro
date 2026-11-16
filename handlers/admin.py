@@ -1,10 +1,12 @@
 # handlers/admin.py
+import io
 import os
 import re
 import html
 import json
 import time
 import uuid
+import asyncio
 import aiohttp
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
@@ -32,10 +34,73 @@ def humanbytes(size):
     return f"{size:.2f} {unit}"
 
 
-def get_progress_bar(current, total):
+def format_eta(seconds):
+    if seconds <= 0 or seconds > 86400:
+        return "0s"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def get_progress_text(title_label: str, current: int, total: int, start_time: float):
     pct = (current / total) * 100 if total > 0 else 0
     filled = int(pct // 10)
-    return f"[{'█' * filled}{'░' * (10 - filled)}] {pct:.1f}%"
+    bar = f"[{'█' * filled}{'░' * (10 - filled)}] {pct:.1f}%"
+
+    elapsed = max(time.time() - start_time, 0.1)
+    speed = current / elapsed
+    eta = (total - current) / speed if speed > 0 and total > current else 0
+
+    return (
+        f"<b>{title_label}</b>\n\n"
+        f"<code>{bar}</code>\n"
+        f"💾 {humanbytes(current)} / {humanbytes(total)}\n"
+        f"⚡ স্পিড: {humanbytes(speed)}/s | ⏱️ বাকি: {format_eta(eta)}"
+    )
+
+
+class ProgressFile(io.IOBase):
+    def __init__(self, path, loop, callback):
+        self._f = open(path, "rb")
+        self.total = os.path.getsize(path)
+        self.uploaded = 0
+        self.loop = loop
+        self.callback = callback
+        self.last_report = 0
+        self.done = False
+
+    def read(self, size=-1):
+        data = self._f.read(size)
+        if data and not self.done:
+            self.uploaded += len(data)
+            now = time.time()
+            if now - self.last_report >= 3.5:
+                self.last_report = now
+                u, t = self.uploaded, self.total
+                self.loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.callback(u, t)) if not self.done else None
+                )
+        return data
+
+    def seek(self, offset, whence=0):
+        return self._f.seek(offset, whence)
+
+    def tell(self):
+        return self._f.tell()
+
+    def readable(self):
+        return True
+
+    def fileno(self):
+        return self._f.fileno()
+
+    def close(self):
+        self.done = True
+        return self._f.close()
 
 
 async def get_bot_username(client: Client):
@@ -60,7 +125,7 @@ async def get_streamtape_creds():
     return None, None
 
 
-async def upload_to_streamtape(file_path, file_name, api_login, api_key):
+async def upload_to_streamtape(file_path, file_name, api_login, api_key, status_msg=None, label="☁️ Streamtape-এ আপলোড হচ্ছে..."):
     upload_server_url = None
     timeout = aiohttp.ClientTimeout(total=1800)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -71,12 +136,26 @@ async def upload_to_streamtape(file_path, file_name, api_login, api_key):
     if not upload_server_url:
         return None
 
+    loop = asyncio.get_running_loop()
+    up_start = time.time()
+
+    async def on_upload_progress(cur, tot):
+        if status_msg:
+            try:
+                await status_msg.edit_text(get_progress_text(label, cur, tot, up_start), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
+    raw = ""
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        with open(file_path, "rb") as f:
+        pf = ProgressFile(file_path, loop, on_upload_progress)
+        try:
             form = aiohttp.FormData()
-            form.add_field("file1", f, filename=file_name)
+            form.add_field("file1", pf, filename=file_name, content_type="application/octet-stream")
             async with session.post(upload_server_url, data=form) as resp:
                 raw = await resp.text()
+        finally:
+            pf.close()
 
     try:
         res = json.loads(raw)
@@ -86,6 +165,23 @@ async def upload_to_streamtape(file_path, file_name, api_login, api_key):
         pass
     m = re.search(r'"id"\s*:\s*"([^"]+)"', raw)
     return m.group(1) if m else None
+
+
+async def download_with_progress(target_msg: Message, status_msg: Message, label: str):
+    dl_start = time.time()
+    last_edit = 0
+
+    async def prog(cur, tot):
+        nonlocal last_edit
+        now = time.time()
+        if now - last_edit >= 3.0:
+            last_edit = now
+            try:
+                await status_msg.edit_text(get_progress_text(label, cur, tot, dl_start), parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
+    return await target_msg.download(progress=prog)
 
 
 def build_draft_keyboard(task_id: str, task: dict):
@@ -349,24 +445,13 @@ async def cmd_player_upload(client: Client, message: Message):
 
     media = target.video or target.document
     fname = getattr(media, "file_name", "video.mp4") or "video.mp4"
-    status = await message.reply_text("📥 <b>ভিডিও ডাউনলোড হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-
-    last_t = 0
-    async def prog(cur, tot):
-        nonlocal last_t
-        now = time.time()
-        if now - last_t > 3:
-            try:
-                await status.edit_text(f"📥 <b>ডাউনলোড:</b>\n{get_progress_bar(cur, tot)}\n💾 {humanbytes(cur)} / {humanbytes(tot)}", parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-            last_t = now
+    status = await message.reply_text("📥 <b>ভিডিও ডাউনলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
 
     fpath = None
     try:
-        fpath = await target.download(progress=prog)
-        await status.edit_text("☁️ <b>Streamtape-এ আপলোড হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-        fid = await upload_to_streamtape(fpath, fname, st_l, st_k)
+        fpath = await download_with_progress(target, status, "📥 ভিডিও ডাউনলোড হচ্ছে...")
+        await status.edit_text("☁️ <b>Streamtape-এ আপলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
+        fid = await upload_to_streamtape(fpath, fname, st_l, st_k, status_msg=status, label="☁️ Streamtape-এ আপলোড হচ্ছে...")
         if not fid:
             await status.edit_text("❌ Streamtape আপলোড ব্যর্থ হয়েছে!")
             return
@@ -557,19 +642,29 @@ async def admin_state_listener(client: Client, message: Message):
         media = message.video or message.document
         fname = getattr(media, "file_name", "video.mp4") or "video.mp4"
         snum = len(task["embeds"]) + 1
-        st = await message.reply_text(f"📥 <b>ভিডিও {snum} ডাউনলোড হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-        fpath = await message.download()
-        await st.edit_text("☁️ <b>Streamtape-এ আপলোড হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-        fid = await upload_to_streamtape(fpath, fname, st_l, st_k)
-        if fpath and os.path.exists(fpath):
-            os.remove(fpath)
-        if fid:
-            task["embeds"].append({"url": f"https://streamta.pe/e/{fid}", "label": f"Server {snum} (HD)"})
-            STATES.pop(uid, None)
-            await st.delete()
-            await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
-        else:
-            await st.edit_text("❌ আপলোড ব্যর্থ হয়েছে!")
+        st = await message.reply_text(f"📥 <b>ভিডিও {snum} ডাউনলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
+
+        fpath = None
+        try:
+            fpath = await download_with_progress(message, st, f"📥 ভিডিও {snum} ডাউনলোড হচ্ছে...")
+            await st.edit_text(f"☁️ <b>ভিডিও {snum} Streamtape-এ আপলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
+            fid = await upload_to_streamtape(
+                fpath, fname, st_l, st_k,
+                status_msg=st,
+                label=f"☁️ ভিডিও {snum} Streamtape-এ আপলোড হচ্ছে..."
+            )
+            if fid:
+                task["embeds"].append({"url": f"https://streamta.pe/e/{fid}", "label": f"Server {snum} (HD)"})
+                STATES.pop(uid, None)
+                await st.delete()
+                await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+            else:
+                await st.edit_text("❌ আপলোড ব্যর্থ হয়েছে! Streamtape API Key চেক করুন।")
+        except Exception as e:
+            await st.edit_text(f"❌ এরর হয়েছে: {html.escape(str(e))}", parse_mode=ParseMode.HTML)
+        finally:
+            if fpath and os.path.exists(fpath):
+                os.remove(fpath)
 
     elif step == "waiting_embed_url" and message.text:
         snum = len(task["embeds"]) + 1
