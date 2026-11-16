@@ -22,6 +22,12 @@ STATES = {}
 _BOT_USERNAME = None
 
 LANGUAGES = ["Hindi Dubbed", "Bangla", "Dual Audio", "South Indian", "English", "Korean"]
+PRESET_CATEGORIES = [
+    "Bangla", "Hindi Dubbed", "South Indian", "Hollywood",
+    "Web Series", "Action", "Horror", "Comedy",
+    "Thriller", "Romance", "Sci-Fi", "Anime",
+    "HD", "1080p", "4K", "WEB-DL"
+]
 
 
 def humanbytes(size):
@@ -50,11 +56,9 @@ def get_progress_text(title_label: str, current: int, total: int, start_time: fl
     pct = (current / total) * 100 if total > 0 else 0
     filled = int(pct // 10)
     bar = f"[{'█' * filled}{'░' * (10 - filled)}] {pct:.1f}%"
-
     elapsed = max(time.time() - start_time, 0.1)
     speed = current / elapsed
     eta = (total - current) / speed if speed > 0 and total > current else 0
-
     return (
         f"<b>{title_label}</b>\n\n"
         f"<code>{bar}</code>\n"
@@ -184,18 +188,38 @@ async def download_with_progress(target_msg: Message, status_msg: Message, label
     return await target_msg.download(progress=prog)
 
 
+def compute_labels_list(task: dict):
+    lbls = list(task.get("labels", []))
+    lang = task.get("language")
+    if lang and lang not in lbls:
+        lbls.append(lang)
+    downloads = task.get("downloads", [])
+    if downloads:
+        q0 = downloads[0]["quality"]
+        q_tag = q0 if q0 in ("HD", "1080p", "4K", "WEB-DL") else "HD"
+        if q_tag not in lbls:
+            lbls.append(q_tag)
+    if task.get("is_adult") and "Adult" not in lbls:
+        lbls.append("Adult")
+    elif not task.get("is_adult") and "Adult" in lbls:
+        lbls.remove("Adult")
+    return list(dict.fromkeys([x.strip() for x in lbls if x.strip()]))
+
+
 def build_draft_keyboard(task_id: str, task: dict):
     emb_c = len(task.get("embeds", []))
     dl_c = len(task.get("downloads", []))
     lang = task.get("language", "Hindi Dubbed")
     is_adult = task.get("is_adult", False)
     adult_txt = "🔞 18+ Adult: YES" if is_adult else "🔞 18+ Adult: NO"
+    lbl_c = len(compute_labels_list(task))
 
     return [
         [
-            {"text": f"🗣️ {lang}", "callback_data": f"mb_lang|{task_id}", "style": "primary"},
+            {"text": f"🗣️ {lang}", "callback_data": f"mb_langm|{task_id}", "style": "primary"},
             {"text": adult_txt, "callback_data": f"mb_adult|{task_id}", "style": "danger" if is_adult else "primary"}
         ],
+        [{"text": f"🏷️ Categories / Labels ({lbl_c})", "callback_data": f"mb_lblm|{task_id}", "style": "primary"}],
         [{"text": f"🎬 Add Streamtape Video ({emb_c})", "callback_data": f"mb_st|{task_id}", "style": "danger"}],
         [{"text": f"🔗 Paste Embed URL / iframe ({emb_c})", "callback_data": f"mb_emb|{task_id}", "style": "primary"}],
         [{"text": f"📁 Add Telegram File ({dl_c})", "callback_data": f"mb_tg|{task_id}", "style": "primary"}],
@@ -203,14 +227,61 @@ def build_draft_keyboard(task_id: str, task: dict):
     ]
 
 
+def build_category_keyboard(task_id: str, task: dict):
+    current = set(compute_labels_list(task))
+    rows = []
+    row = []
+    for cat in PRESET_CATEGORIES:
+        is_on = cat in current
+        row.append({
+            "text": f"{'✅' if is_on else '➕'} {cat}",
+            "callback_data": f"mb_tglbl|{task_id}|{cat}",
+            "style": "success" if is_on else "primary"
+        })
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([
+        {"text": "✏️ Type Custom Label", "callback_data": f"mb_clbl|{task_id}", "style": "danger"},
+        {"text": "🔙 Back to Draft", "callback_data": f"mb_back|{task_id}", "style": "success"}
+    ])
+    return rows
+
+
+def build_language_keyboard(task_id: str, task: dict):
+    cur = task.get("language", "")
+    rows = []
+    row = []
+    for lang in LANGUAGES:
+        is_on = (lang == cur)
+        row.append({
+            "text": f"{'✅ ' if is_on else ''}{lang}",
+            "callback_data": f"mb_setl|{task_id}|{lang}",
+            "style": "success" if is_on else "primary"
+        })
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([
+        {"text": "✏️ Custom Language", "callback_data": f"mb_clang|{task_id}", "style": "danger"},
+        {"text": "🔙 Back", "callback_data": f"mb_back|{task_id}", "style": "success"}
+    ])
+    return rows
+
+
 def draft_summary_text(task: dict):
+    labels_str = ", ".join(compute_labels_list(task)) or "None"
     return (
         f"🎬 <b>মুভি ড্রাফট রেডি:</b> <code>{html.escape(task.get('title', 'Untitled'))}</code>\n"
         f"⭐ <b>Rating:</b> {task.get('rating', 'N/A')}/10 | 📅 <b>Year:</b> {task.get('year', 'N/A')}\n"
-        f"🎭 <b>Genre:</b> {html.escape(task.get('genre', 'Movie'))}\n"
         f"🗣️ <b>Language:</b> {html.escape(task.get('language', 'Hindi Dubbed'))}\n"
+        f"🏷️ <b>Labels:</b> <code>{html.escape(labels_str)}</code>\n"
         f"▶️ <b>Embed Servers:</b> {len(task.get('embeds', []))} | 📁 <b>Download Files:</b> {len(task.get('downloads', []))}\n\n"
-        f"👇 নিচের রঙিন বাটন থেকে Embed বা টেলিগ্রাম ফাইল যোগ করুন, অথবা <b>Finish</b> চাপুন:"
+        f"👇 নিচের বাটন থেকে ইচ্ছামতো ভাষা, ক্যাটাগরি, Embed বা ফাইল যোগ করুন:"
     )
 
 
@@ -305,15 +376,7 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
         f'{dl_box_html}'
     )
 
-    labels_list = [g.strip() for g in task.get("genre", "").split(",") if g.strip()]
-    if task.get("language"):
-        labels_list.append(task["language"])
-    if downloads:
-        q0 = downloads[0]["quality"]
-        labels_list.append(q0 if q0 in ("HD", "1080p", "4K", "WEB-DL") else "HD")
-    if task.get("is_adult"):
-        labels_list.append("Adult")
-    labels_str = ", ".join(dict.fromkeys(labels_list))
+    labels_str = ", ".join(compute_labels_list(task))
 
     preview_id = f"p_{task_id}"
     if db is not None:
@@ -414,7 +477,7 @@ async def cmd_stats(client: Client, message: Message):
 @Client.on_message(filters.command("post") & ADMIN_FILTER & filters.private)
 async def cmd_new_post(client: Client, message: Message):
     task_id = uuid.uuid4().hex[:8]
-    TASKS[task_id] = {"embeds": [], "downloads": [], "language": "Hindi Dubbed", "is_adult": False}
+    TASKS[task_id] = {"embeds": [], "downloads": [], "labels": [], "language": "Hindi Dubbed", "is_adult": False}
 
     tmdb_k = await get_tmdb_key()
     if tmdb_k:
@@ -461,6 +524,7 @@ async def cmd_player_upload(client: Client, message: Message):
             "title": os.path.splitext(fname)[0],
             "embeds": [{"url": f"https://streamta.pe/e/{fid}", "label": "Server 1 (HD)"}],
             "downloads": [],
+            "labels": [],
             "language": "Hindi Dubbed",
             "is_adult": False
         }
@@ -502,12 +566,58 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         await query.message.reply_text("📝 <b>মুভির টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
         await query.answer()
 
-    elif action == "mb_lang":
-        cur = task.get("language", "Hindi Dubbed")
-        idx = (LANGUAGES.index(cur) + 1) % len(LANGUAGES) if cur in LANGUAGES else 0
-        task["language"] = LANGUAGES[idx]
+    elif action == "mb_back":
         await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
-        await query.answer(f"Language: {task['language']}")
+        await query.answer()
+
+    elif action == "mb_langm":
+        await edit_colored_msg(
+            query.message.chat.id, query.message.id,
+            "🗣️ <b>ভাষা (Language) সিলেক্ট করুন বা Custom লিখুন:</b>",
+            build_language_keyboard(task_id, task)
+        )
+        await query.answer()
+
+    elif action == "mb_setl":
+        task["language"] = parts[2]
+        await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+        await query.answer(f"Language: {parts[2]}")
+
+    elif action == "mb_clang":
+        STATES[uid] = {"task_id": task_id, "step": "waiting_custom_lang"}
+        await query.message.reply_text("✏️ <b>আপনার পছন্দমতো ভাষার নাম লিখে পাঠান</b> (যেমন: <code>Hindi + English + Bangla</code>):")
+        await query.answer()
+
+    elif action == "mb_lblm":
+        await edit_colored_msg(
+            query.message.chat.id, query.message.id,
+            "🏷️ <b>আপনার ওয়েবসাইটের ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে, চাপ দিয়ে অন/অফ করুন)</i>",
+            build_category_keyboard(task_id, task)
+        )
+        await query.answer()
+
+    elif action == "mb_tglbl":
+        cat = parts[2]
+        lbls = task.setdefault("labels", [])
+        if cat in lbls:
+            lbls.remove(cat)
+        else:
+            lbls.append(cat)
+        await edit_colored_msg(
+            query.message.chat.id, query.message.id,
+            "🏷️ <b>আপনার ওয়েবসাইটের ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে, চাপ দিয়ে অন/অফ করুন)</i>",
+            build_category_keyboard(task_id, task)
+        )
+        await query.answer(f"Updated: {cat}")
+
+    elif action == "mb_clbl":
+        STATES[uid] = {"task_id": task_id, "step": "waiting_custom_label"}
+        await query.message.reply_text(
+            "✏️ <b>ইচ্ছামতো ক্যাটাগরি/লেবেল লিখে পাঠান</b>\n"
+            "<i>(একাধিক হলে কমা দিয়ে লিখুন, যেমন: <code>Korean, Drama, 2025</code>):</i>",
+            parse_mode=ParseMode.HTML
+        )
+        await query.answer()
 
     elif action == "mb_adult":
         task["is_adult"] = not task.get("is_adult", False)
@@ -611,8 +721,23 @@ async def admin_state_listener(client: Client, message: Message):
             return
 
         task.update(info)
+        task["labels"] = [g.strip() for g in info.get("genre", "").split(",") if g.strip()]
         STATES.pop(uid, None)
         await st.delete()
+        await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+
+    elif step == "waiting_custom_lang" and message.text:
+        task["language"] = message.text.strip()
+        STATES.pop(uid, None)
+        await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+
+    elif step == "waiting_custom_label" and message.text:
+        new_lbls = [x.strip() for x in message.text.split(",") if x.strip()]
+        lbls = task.setdefault("labels", [])
+        for x in new_lbls:
+            if x not in lbls:
+                lbls.append(x)
+        STATES.pop(uid, None)
         await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
 
     elif step == "waiting_title" and message.text:
