@@ -7,19 +7,13 @@ except RuntimeError:
 
 import os
 import html
+import aiohttp
 from aiohttp import web
 from pyrogram import Client, idle
+from pyrogram.errors import FloodWait
 from pyrogram.types import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat
 import config
 from database import db
-
-bot = Client(
-    "MovieBloggerBot",
-    api_id=config.API_ID,
-    api_hash=config.API_HASH,
-    bot_token=config.BOT_TOKEN,
-    plugins=dict(root="handlers")
-)
 
 routes = web.RouteTableDef()
 
@@ -27,6 +21,11 @@ routes = web.RouteTableDef()
 @routes.get("/")
 async def home_route(request):
     return web.Response(text=f"{config.SITE_NAME} Blogger Bot is Running!", content_type="text/plain")
+
+
+@routes.get("/ping")
+async def ping_route(request):
+    return web.Response(text="pong", content_type="text/plain")
 
 
 @routes.get("/posters/{filename}")
@@ -155,7 +154,21 @@ async def preview_route(request):
     return web.Response(text=page, content_type="text/html")
 
 
-async def setup_bot_commands():
+async def keep_alive_loop():
+    await asyncio.sleep(30)
+    ping_url = f"{config.APP_URL}/ping"
+    timeout = aiohttp.ClientTimeout(total=15)
+    while True:
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(ping_url) as resp:
+                    print(f"💓 Self-Ping ({ping_url}) -> {resp.status}")
+        except Exception as e:
+            print(f"⚠️ Self-Ping error: {e}")
+        await asyncio.sleep(240)
+
+
+async def setup_bot_commands(bot: Client):
     await bot.set_bot_commands(
         [BotCommand("start", "Start Bot")],
         scope=BotCommandScopeAllPrivateChats()
@@ -177,16 +190,77 @@ async def setup_bot_commands():
 
 
 async def start_services():
+    # ১. আগে ওয়েব সার্ভার চালু করা (যাতে Render পোর্ট ওপেন পায়)
     app = web.Application()
     app.add_routes(routes)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", config.PORT)
     await site.start()
+    print(f"🌐 Web Server started on port {config.PORT}")
 
-    await bot.start()
-    await setup_bot_commands()
-    print(f"🚀 {config.SITE_NAME} Bot & Preview Server running on port {config.PORT}")
+    # ২. প্রতি ৪ মিনিট পর পর Self-Ping চালু
+    asyncio.create_task(keep_alive_loop())
+
+    # ৩. MongoDB থেকে সেভ করা সেশন লোড (যাতে বারবার লগইন না লাগে)
+    saved_session = None
+    token_prefix = config.BOT_TOKEN[:15]
+    if db is not None:
+        sdoc = await db.settings.find_one({"_id": "bot_session"})
+        if sdoc and sdoc.get("token_hash") == token_prefix:
+            saved_session = sdoc.get("session")
+
+    bot = Client(
+        "MovieBloggerBot",
+        api_id=config.API_ID,
+        api_hash=config.API_HASH,
+        bot_token=config.BOT_TOKEN,
+        session_string=saved_session,
+        in_memory=True,
+        plugins=dict(root="handlers")
+    )
+
+    # ৪. FloodWait থাকলে ক্র্যাশ না করে চুপচাপ অপেক্ষা করে চালু হবে
+    while True:
+        try:
+            await bot.start()
+            break
+        except FloodWait as e:
+            wait_sec = int(getattr(e, "value", 60)) + 5
+            print(f"⏳ Telegram FloodWait: waiting {wait_sec} seconds before retrying...")
+            await asyncio.sleep(wait_sec)
+        except Exception as e:
+            if saved_session:
+                print(f"⚠️ Saved session invalid ({e}), resetting session...")
+                saved_session = None
+                if db is not None:
+                    await db.settings.delete_one({"_id": "bot_session"})
+                bot = Client(
+                    "MovieBloggerBot",
+                    api_id=config.API_ID,
+                    api_hash=config.API_HASH,
+                    bot_token=config.BOT_TOKEN,
+                    in_memory=True,
+                    plugins=dict(root="handlers")
+                )
+            else:
+                raise
+
+    # ৫. প্রথমবার লগইনের পর সেশন MongoDB-তে স্থায়ীভাবে সেভ
+    if not saved_session and db is not None:
+        try:
+            s_str = await bot.export_session_string()
+            await db.settings.update_one(
+                {"_id": "bot_session"},
+                {"$set": {"session": s_str, "token_hash": token_prefix}},
+                upsert=True
+            )
+            print("💾 Bot session saved to MongoDB permanently!")
+        except Exception as e:
+            print(f"⚠️ Could not save session: {e}")
+
+    await setup_bot_commands(bot)
+    print(f"🚀 {config.SITE_NAME} Bot is Online!")
     await idle()
     await bot.stop()
     await runner.cleanup()
