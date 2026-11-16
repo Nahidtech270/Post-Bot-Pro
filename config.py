@@ -5,7 +5,7 @@ load_dotenv()
 
 API_ID = int(os.environ.get("API_ID", "0"))
 API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "9219141073:AAHhE6AWtcHlF0s99Daa_kaJKyelfWeOdNA")
 MONGO_URL = os.environ.get("MONGO_URL", "")
 
 # এক বা একাধিক অ্যাডমিন আইডি (কমা দিয়ে দিতে পারেন, যেমন: 12345678,98765432)
