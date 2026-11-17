@@ -21,11 +21,11 @@ TASKS = {}
 STATES = {}
 _BOT_USERNAME = None
 
-LANGUAGES = ["Hindi Dubbed", "Bangla", "Dual Audio", "South Indian", "English", "Korean"]
+LANGUAGES = ["Bangla", "Hindi Dubbed", "Dual Audio", "South Indian", "English", "Korean"]
 PRESET_CATEGORIES = [
-    "Bangla", "Hindi Dubbed", "South Indian", "Hollywood",
-    "Web Series", "Action", "Horror", "Comedy",
-    "Thriller", "Romance", "Sci-Fi", "Anime",
+    "Viral", "Bangla", "Hindi Dubbed", "South Indian",
+    "Hollywood", "Web Series", "Action", "Horror",
+    "Comedy", "Thriller", "Sci-Fi", "Anime",
     "HD", "1080p", "4K", "WEB-DL"
 ]
 
@@ -129,7 +129,7 @@ async def get_streamtape_creds():
     return None, None
 
 
-async def upload_to_streamtape(file_path, file_name, api_login, api_key, status_msg=None, label="☁️ Streamtape-এ আপলোড হচ্ছে..."):
+async def upload_to_streamtape(file_path, file_name, api_login, api_key, status_msg=None, label_fn=None):
     upload_server_url = None
     timeout = aiohttp.ClientTimeout(total=1800)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -146,7 +146,8 @@ async def upload_to_streamtape(file_path, file_name, api_login, api_key, status_
     async def on_upload_progress(cur, tot):
         if status_msg:
             try:
-                await status_msg.edit_text(get_progress_text(label, cur, tot, up_start), parse_mode=ParseMode.HTML)
+                lbl = label_fn() if callable(label_fn) else str(label_fn or "☁️ Streamtape-এ আপলোড হচ্ছে...")
+                await status_msg.edit_text(get_progress_text(lbl, cur, tot, up_start), parse_mode=ParseMode.HTML)
             except Exception:
                 pass
 
@@ -171,7 +172,7 @@ async def upload_to_streamtape(file_path, file_name, api_login, api_key, status_
     return m.group(1) if m else None
 
 
-async def download_with_progress(target_msg: Message, status_msg: Message, label: str):
+async def download_with_progress(target_msg: Message, status_msg: Message, label_fn):
     dl_start = time.time()
     last_edit = 0
 
@@ -181,7 +182,8 @@ async def download_with_progress(target_msg: Message, status_msg: Message, label
         if now - last_edit >= 3.0:
             last_edit = now
             try:
-                await status_msg.edit_text(get_progress_text(label, cur, tot, dl_start), parse_mode=ParseMode.HTML)
+                lbl = label_fn() if callable(label_fn) else str(label_fn)
+                await status_msg.edit_text(get_progress_text(lbl, cur, tot, dl_start), parse_mode=ParseMode.HTML)
             except Exception:
                 pass
 
@@ -189,16 +191,8 @@ async def download_with_progress(target_msg: Message, status_msg: Message, label
 
 
 def compute_labels_list(task: dict):
+    # ১০০% ম্যানুয়াল: ইউজার যেগুলো নিজে দিয়েছে শুধু সেগুলোই থাকবে!
     lbls = list(task.get("labels", []))
-    lang = task.get("language")
-    if lang and lang not in lbls:
-        lbls.append(lang)
-    downloads = task.get("downloads", [])
-    if downloads:
-        q0 = downloads[0]["quality"]
-        q_tag = q0 if q0 in ("HD", "1080p", "4K", "WEB-DL") else "HD"
-        if q_tag not in lbls:
-            lbls.append(q_tag)
     if task.get("is_adult") and "Adult" not in lbls:
         lbls.append("Adult")
     elif not task.get("is_adult") and "Adult" in lbls:
@@ -209,22 +203,29 @@ def compute_labels_list(task: dict):
 def build_draft_keyboard(task_id: str, task: dict):
     emb_c = len(task.get("embeds", []))
     dl_c = len(task.get("downloads", []))
-    lang = task.get("language", "Hindi Dubbed")
+    lang = task.get("language") or "Not Set (Optional)"
     is_adult = task.get("is_adult", False)
     adult_txt = "🔞 18+ Adult: YES" if is_adult else "🔞 18+ Adult: NO"
     lbl_c = len(compute_labels_list(task))
+    mode = task.get("post_mode", "vertical")
+    mode_txt = "📺 View: Vertical (Video 1, 2..)" if mode == "vertical" else "🔄 View: Server Tabs (Movie)"
 
-    return [
+    rows = [
+        [{"text": mode_txt, "callback_data": f"mb_mode|{task_id}", "style": "success"}],
         [
             {"text": f"🗣️ {lang}", "callback_data": f"mb_langm|{task_id}", "style": "primary"},
             {"text": adult_txt, "callback_data": f"mb_adult|{task_id}", "style": "danger" if is_adult else "primary"}
         ],
         [{"text": f"🏷️ Categories / Labels ({lbl_c})", "callback_data": f"mb_lblm|{task_id}", "style": "primary"}],
-        [{"text": f"🎬 Add Streamtape Video ({emb_c})", "callback_data": f"mb_st|{task_id}", "style": "danger"}],
+        [{"text": f"🎬 Add Bulk Videos to Streamtape ({emb_c})", "callback_data": f"mb_st|{task_id}", "style": "danger"}],
         [{"text": f"🔗 Paste Embed URL / iframe ({emb_c})", "callback_data": f"mb_emb|{task_id}", "style": "primary"}],
-        [{"text": f"📁 Add Telegram File ({dl_c})", "callback_data": f"mb_tg|{task_id}", "style": "primary"}],
-        [{"text": "✅ Finish & Get Preview + Copy Code", "callback_data": f"mb_done|{task_id}", "style": "success"}]
     ]
+    # মুভি মোডে থাকলে ডাউনলোড বাটনের অপশন দেখাবে (ভাইরাল ভার্টিকাল মোডে নয়)
+    if mode != "vertical" or dl_c > 0:
+        rows.append([{"text": f"📁 Add Telegram File ({dl_c})", "callback_data": f"mb_tg|{task_id}", "style": "primary"}])
+
+    rows.append([{"text": "✅ Finish & Get Preview + Copy Code", "callback_data": f"mb_done|{task_id}", "style": "success"}])
+    return rows
 
 
 def build_category_keyboard(task_id: str, task: dict):
@@ -268,35 +269,57 @@ def build_language_keyboard(task_id: str, task: dict):
         rows.append(row)
     rows.append([
         {"text": "✏️ Custom Language", "callback_data": f"mb_clang|{task_id}", "style": "danger"},
-        {"text": "🔙 Back", "callback_data": f"mb_back|{task_id}", "style": "success"}
+        {"text": "🗑️ Clear Language", "callback_data": f"mb_clrl|{task_id}", "style": "danger"}
     ])
+    rows.append([{"text": "🔙 Back", "callback_data": f"mb_back|{task_id}", "style": "success"}])
     return rows
 
 
 def draft_summary_text(task: dict):
-    labels_str = ", ".join(compute_labels_list(task)) or "None"
+    labels_str = ", ".join(compute_labels_list(task)) or "None (Click Categories to select)"
+    lang = task.get("language") or "None"
+    mode = "Vertical (Video 1, 2, 3...)" if task.get("post_mode", "vertical") == "vertical" else "Server Tabs (Movie)"
     return (
-        f"🎬 <b>মুভি ড্রাফট রেডি:</b> <code>{html.escape(task.get('title', 'Untitled'))}</code>\n"
-        f"⭐ <b>Rating:</b> {task.get('rating', 'N/A')}/10 | 📅 <b>Year:</b> {task.get('year', 'N/A')}\n"
-        f"🗣️ <b>Language:</b> {html.escape(task.get('language', 'Hindi Dubbed'))}\n"
+        f"🎬 <b>ড্রাফট রেডি:</b> <code>{html.escape(task.get('title', 'Untitled'))}</code>\n"
+        f"📺 <b>Mode:</b> {mode}\n"
+        f"🗣️ <b>Language:</b> {html.escape(lang)}\n"
         f"🏷️ <b>Labels:</b> <code>{html.escape(labels_str)}</code>\n"
-        f"▶️ <b>Embed Servers:</b> {len(task.get('embeds', []))} | 📁 <b>Download Files:</b> {len(task.get('downloads', []))}\n\n"
-        f"👇 নিচের বাটন থেকে ইচ্ছামতো ভাষা, ক্যাটাগরি, Embed বা ফাইল যোগ করুন:"
+        f"▶️ <b>Videos:</b> {len(task.get('embeds', []))} | 📁 <b>Download Files:</b> {len(task.get('downloads', []))}\n\n"
+        f"👇 নিচের বাটন থেকে ক্যাটাগরি ও ভিডিও যুক্ত করুন:"
     )
 
 
 async def generate_final_preview(client: Client, chat_id: int, task_id: str, task: dict):
-    title = html.escape(task.get("title", "Untitled Movie"))
+    title = html.escape(task.get("title", "Untitled Video"))
     poster_url = task.get("poster_url") or "https://via.placeholder.com/300x450/151924/9ca3af?text=No+Poster"
-    language = html.escape(task.get("language", "Hindi Dubbed"))
-    genre = html.escape(task.get("genre", "Movie"))
-    rating = html.escape(str(task.get("rating", "N/A")))
-    runtime = html.escape(str(task.get("runtime", "N/A")))
-    year = html.escape(str(task.get("year", "N/A")))
-    cast = html.escape(task.get("cast", "N/A"))
-    storyline = html.escape(task.get("storyline", "Watch or download this movie in HD quality."))
+    language = task.get("language", "")
+    genre = task.get("genre", "")
+    rating = str(task.get("rating", ""))
+    runtime = str(task.get("runtime", ""))
+    year = str(task.get("year", ""))
+    cast = task.get("cast", "")
+    storyline = task.get("storyline", "")
     trailer_id = task.get("trailer_id", "")
     screenshots = task.get("screenshots", [])
+
+    # শুধু যেসব তথ্য আছে সেগুলোই Hero Box-এ দেখাবে
+    info_items = f'    <li><strong>Title:</strong> {title}</li>\n'
+    if language:
+        info_items += f'    <li><strong>Language:</strong> {html.escape(language)}</li>\n'
+    if genre:
+        info_items += f'    <li><strong>Genre:</strong> {html.escape(genre)}</li>\n'
+    if rating and rating != "N/A":
+        info_items += f'    <li><strong>IMDb Rating:</strong> &#11088; {html.escape(rating)}/10</li>\n'
+    if runtime and runtime != "N/A":
+        info_items += f'    <li><strong>Runtime:</strong> {html.escape(runtime)}</li>\n'
+    if year and year != "N/A":
+        info_items += f'    <li><strong>Release Year:</strong> {html.escape(year)}</li>\n'
+    if cast and cast != "N/A":
+        info_items += f'    <li><strong>Cast:</strong> {html.escape(cast)}</li>\n'
+
+    story_html = ""
+    if storyline:
+        story_html = f'<h3>&#128214; Storyline</h3>\n<p>{html.escape(storyline)}</p>\n\n'
 
     trailer_html = ""
     if trailer_id:
@@ -304,32 +327,53 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
             '<h3>&#127902; Official Trailer</h3>\n'
             '<div class="trailer-box">\n'
             f'  <iframe src="https://www.youtube.com/embed/{html.escape(trailer_id)}" allowfullscreen="allowfullscreen"></iframe>\n'
-            '</div>\n'
+            '</div>\n\n'
         )
 
     ss_html = ""
     if screenshots:
         ss_imgs = "".join([f'<img src="{s}" alt="{title} Screenshot" loading="lazy"/>' for s in screenshots])
-        ss_html = f'<h3>&#128248; Screenshots</h3>\n<div class="screenshots-grid">{ss_imgs}</div>\n'
+        ss_html = f'<h3>&#128248; Screenshots</h3>\n<div class="screenshots-grid">{ss_imgs}</div>\n\n'
 
+    # Embed Videos (Vertical List vs Server Tabs)
     embed_section_html = ""
     embeds = task.get("embeds", [])
+    mode = task.get("post_mode", "vertical")
+
     if embeds:
-        tabs_html = ""
-        for idx, emb in enumerate(embeds, start=1):
-            active_cls = " active" if idx == 1 else ""
-            srv_name = html.escape(emb.get("label", f"Server {idx} (HD)"))
-            emb_val = html.escape(emb["url"], quote=True)
-            tabs_html += f'<button type="button" class="embed-tab-btn{active_cls}" data-embed="{emb_val}" onclick="loadThemeEmbed(this)">&#9654; {srv_name}</button>\n'
+        if mode == "vertical":
+            v_items = ""
+            for idx, emb in enumerate(embeds, start=1):
+                emb_val = html.escape(emb["url"], quote=True)
+                v_items += (
+                    '<div class="vertical-video-item">\n'
+                    f'  <h4>&#127916; Video {idx}</h4>\n'
+                    f'  <div class="embed-player-frame" data-embed="{emb_val}"></div>\n'
+                    '</div>\n'
+                )
+            embed_section_html = (
+                '<div class="embed-section">\n'
+                '  <h3>&#127916; Watch Online</h3>\n'
+                f'  <div class="vertical-videos-list">\n{v_items}  </div>\n'
+                '</div>\n'
+            )
+        else:
+            tabs_html = ""
+            for idx, emb in enumerate(embeds, start=1):
+                active_cls = " active" if idx == 1 else ""
+                srv_name = f"Server {idx} (HD)"
+                emb_val = html.escape(emb["url"], quote=True)
+                tabs_html += f'<button type="button" class="embed-tab-btn{active_cls}" data-embed="{emb_val}" onclick="loadThemeEmbed(this)">&#9654; {srv_name}</button>\n'
 
-        embed_section_html = (
-            '<div class="embed-section">\n'
-            '  <h3>&#127916; Watch Online (Stream Player)</h3>\n'
-            f'  <div class="embed-tabs">\n{tabs_html}  </div>\n'
-            '  <div class="embed-player-frame"></div>\n'
-            '</div>\n'
-        )
+            embed_section_html = (
+                '<div class="embed-section">\n'
+                '  <h3>&#127916; Watch Online (Stream Player)</h3>\n'
+                f'  <div class="embed-tabs">\n{tabs_html}  </div>\n'
+                '  <div class="embed-player-frame"></div>\n'
+                '</div>\n'
+            )
 
+    # Download Buttons (Only if added)
     dl_section_html = ""
     downloads = task.get("downloads", [])
     if downloads:
@@ -360,17 +404,10 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
         f'<div class="movie-hero-box">\n'
         f'  <div class="movie-hero-poster"><img src="{poster_url}" alt="{title}"/></div>\n'
         f'  <ul class="movie-info-list">\n'
-        f'    <li><strong>Title:</strong> {title}</li>\n'
-        f'    <li><strong>Language:</strong> {language}</li>\n'
-        f'    <li><strong>Genre:</strong> {genre}</li>\n'
-        f'    <li><strong>IMDb Rating:</strong> &#11088; {rating}/10</li>\n'
-        f'    <li><strong>Runtime:</strong> {runtime}</li>\n'
-        f'    <li><strong>Release Year:</strong> {year}</li>\n'
-        f'    <li><strong>Cast:</strong> {cast}</li>\n'
+        f'{info_items}'
         f'  </ul>\n'
         f'</div>\n\n'
-        f'<h3>&#128214; Storyline</h3>\n'
-        f'<p>{storyline}</p>\n\n'
+        f'{story_html}'
         f'{trailer_html}'
         f'{ss_html}'
         f'{dl_box_html}'
@@ -383,7 +420,7 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
         await db.previews.update_one(
             {"_id": preview_id},
             {"$set": {
-                "title": task.get("title", "Movie"),
+                "title": task.get("title", "Video"),
                 "labels": labels_str,
                 "html": blogger_html,
                 "created_at": time.time()
@@ -398,11 +435,82 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
         chat_id,
         f"🎉 <b>পোস্ট কোড সফলভাবে তৈরি হয়েছে!</b>\n\n"
         f"🎬 <b>Title:</b> <code>{title}</code>\n"
-        f"🏷 <b>Labels:</b> <code>{html.escape(labels_str)}</code>\n\n"
+        f"🏷 <b>Labels:</b> <code>{html.escape(labels_str) or 'None'}</code>\n\n"
         f"👇 নিচের সবুজ বাটনে ক্লিক করে লাইভ প্রিভিউ দেখুন এবং ১-ক্লিকে কোড কপি করুন:\n"
         f"🔗 {preview_url}",
         kb
     )
+
+
+# ----------------- [ ব্যাচ কিউ প্রসেসর (একসাথে সব ভিডিও আপলোড) ] -----------------
+
+async def process_batch_queue(client: Client, chat_id: int, uid: int, task_id: str):
+    task = TASKS.get(task_id)
+    if not task:
+        return
+
+    st_l, st_k = await get_streamtape_creds()
+    status_msg = await client.send_message(chat_id, "⏳ <b>ব্যাচ আপলোড কিউ শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
+
+    try:
+        while task.get("queue"):
+            if task_id not in TASKS:
+                break
+
+            msg = task["queue"].pop(0)
+            media = msg.video or msg.document
+            fname = getattr(media, "file_name", "video.mp4") or "video.mp4"
+            done_count = len(task["embeds"])
+            cur_num = done_count + 1
+
+            def total_now():
+                return len(task["embeds"]) + 1 + len(task.get("queue", []))
+
+            fpath = None
+            try:
+                await status_msg.edit_text(
+                    f"📥 <b>ভিডিও {cur_num}/{total_now()} ডাউনলোড শুরু হচ্ছে...</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                fpath = await download_with_progress(
+                    msg, status_msg,
+                    lambda c=cur_num: f"📥 ভিডিও {c}/{total_now()} ডাউনলোড হচ্ছে..."
+                )
+                await status_msg.edit_text(
+                    f"☁️ <b>ভিডিও {cur_num}/{total_now()} Streamtape-এ আপলোড হচ্ছে...</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                fid = await upload_to_streamtape(
+                    fpath, fname, st_l, st_k,
+                    status_msg=status_msg,
+                    label_fn=lambda c=cur_num: f"☁️ ভিডিও {c}/{total_now()} Streamtape-এ আপলোড হচ্ছে..."
+                )
+                if fid:
+                    task["embeds"].append({"url": f"https://streamta.pe/e/{fid}"})
+                else:
+                    await client.send_message(chat_id, f"⚠️ ভিডিও {cur_num} (`{fname}`) আপলোড ব্যর্থ হয়েছে, পরেরটিতে যাচ্ছি...")
+            except Exception as e:
+                await client.send_message(chat_id, f"⚠️ ভিডিও {cur_num} এরর: {e}")
+            finally:
+                if fpath and os.path.exists(fpath):
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
+    finally:
+        task["queue_running"] = False
+        if STATES.get(uid, {}).get("step") == "waiting_batch_videos":
+            STATES.pop(uid, None)
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+        if task_id in TASKS:
+            await send_colored_msg(
+                chat_id,
+                f"✅ <b>সব ভিডিও আপলোড সম্পন্ন! (মোট: {len(task['embeds'])} টি)</b>\n\n" + draft_summary_text(task),
+                build_draft_keyboard(task_id, task)
+            )
 
 
 # ----------------- [ সেটিংস ও স্ট্যাটাস কমান্ড ] -----------------
@@ -477,21 +585,31 @@ async def cmd_stats(client: Client, message: Message):
 @Client.on_message(filters.command("post") & ADMIN_FILTER & filters.private)
 async def cmd_new_post(client: Client, message: Message):
     task_id = uuid.uuid4().hex[:8]
-    TASKS[task_id] = {"embeds": [], "downloads": [], "labels": [], "language": "Hindi Dubbed", "is_adult": False}
+    TASKS[task_id] = {
+        "embeds": [],
+        "downloads": [],
+        "labels": [],
+        "language": "",
+        "is_adult": False,
+        "post_mode": "vertical",
+        "queue": [],
+        "queue_running": False
+    }
 
     tmdb_k = await get_tmdb_key()
     if tmdb_k:
         STATES[message.from_user.id] = {"task_id": task_id, "step": "waiting_tmdb"}
-        kb = [[{"text": "⏭️ Manual Title & Poster", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
+        kb = [[{"text": "🔥 Viral / Custom Post (No TMDB)", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
         await send_colored_msg(
             message.chat.id,
-            "🎬 <b>নতুন মুভি পোস্ট তৈরি</b>\n\n"
-            "🎞 <b>মুভির নাম বা TMDB ID লিখে পাঠান</b> (যেমন: <code>RRR</code> বা <code>579974</code>, সিরিজ হলে <code>tv:1399</code>):",
+            "🎬 <b>নতুন পোস্ট তৈরি শুরু হয়েছে!</b>\n\n"
+            "• <b>মুভি/সিরিজ হলে:</b> TMDB নাম বা ID লিখে পাঠান (যেমন: <code>RRR</code> বা <code>tv:1399</code>)\n"
+            "• <b>ভাইরাল বা কাস্টম ভিডিও হলে:</b> নিচের লাল বাটনে চাপ দিন 👇",
             kb
         )
     else:
         STATES[message.from_user.id] = {"task_id": task_id, "step": "waiting_title"}
-        await message.reply_text("🎬 <b>ধাপ ১/২: মুভির টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
+        await message.reply_text("🎬 <b>ধাপ ১/২: পোস্টের টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
 
 
 @Client.on_message(filters.command(["player", "embed"]) & ADMIN_FILTER & filters.private)
@@ -514,7 +632,7 @@ async def cmd_player_upload(client: Client, message: Message):
     try:
         fpath = await download_with_progress(target, status, "📥 ভিডিও ডাউনলোড হচ্ছে...")
         await status.edit_text("☁️ <b>Streamtape-এ আপলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-        fid = await upload_to_streamtape(fpath, fname, st_l, st_k, status_msg=status, label="☁️ Streamtape-এ আপলোড হচ্ছে...")
+        fid = await upload_to_streamtape(fpath, fname, st_l, st_k, status_msg=status, label_fn="☁️ Streamtape-এ আপলোড হচ্ছে...")
         if not fid:
             await status.edit_text("❌ Streamtape আপলোড ব্যর্থ হয়েছে!")
             return
@@ -522,21 +640,24 @@ async def cmd_player_upload(client: Client, message: Message):
         task_id = uuid.uuid4().hex[:8]
         TASKS[task_id] = {
             "title": os.path.splitext(fname)[0],
-            "embeds": [{"url": f"https://streamta.pe/e/{fid}", "label": "Server 1 (HD)"}],
+            "embeds": [{"url": f"https://streamta.pe/e/{fid}"}],
             "downloads": [],
             "labels": [],
-            "language": "Hindi Dubbed",
-            "is_adult": False
+            "language": "",
+            "is_adult": False,
+            "post_mode": "vertical",
+            "queue": [],
+            "queue_running": False
         }
         await status.delete()
         tmdb_k = await get_tmdb_key()
         if tmdb_k:
             STATES[message.from_user.id] = {"task_id": task_id, "step": "waiting_tmdb"}
-            kb = [[{"text": "⏭️ Manual Title & Poster", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
+            kb = [[{"text": "🔥 Viral / Custom Post (No TMDB)", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
             await send_colored_msg(
                 message.chat.id,
                 "✅ <b>Streamtape আপলোড সম্পন্ন!</b>\n\n"
-                "🎞 এবার <b>মুভির নাম বা TMDB ID</b> পাঠান (অটোমেটিক পোস্টার ও ডিটেলস আনার জন্য):",
+                "🎞 মুভি হলে <b>নাম বা TMDB ID</b> পাঠান, আর ভাইরাল/কাস্টম ভিডিও হলে নিচের বাটনে চাপুন:",
                 kb
             )
         else:
@@ -562,11 +683,18 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
     uid = query.from_user.id
 
     if action == "mb_manual":
+        task["post_mode"] = "vertical"
         STATES[uid] = {"task_id": task_id, "step": "waiting_title"}
-        await query.message.reply_text("📝 <b>মুভির টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
+        await query.message.reply_text("📝 <b>ধাপ ১/২: পোস্টের টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
         await query.answer()
 
+    elif action == "mb_mode":
+        task["post_mode"] = "tabs" if task.get("post_mode", "vertical") == "vertical" else "vertical"
+        await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+        await query.answer(f"Mode: {task['post_mode']}")
+
     elif action == "mb_back":
+        STATES.pop(uid, None)
         await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
         await query.answer()
 
@@ -583,15 +711,20 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
         await query.answer(f"Language: {parts[2]}")
 
+    elif action == "mb_clrl":
+        task["language"] = ""
+        await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+        await query.answer("Language cleared!")
+
     elif action == "mb_clang":
         STATES[uid] = {"task_id": task_id, "step": "waiting_custom_lang"}
-        await query.message.reply_text("✏️ <b>আপনার পছন্দমতো ভাষার নাম লিখে পাঠান</b> (যেমন: <code>Hindi + English + Bangla</code>):")
+        await query.message.reply_text("✏️ <b>আপনার পছন্দমতো ভাষার নাম লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
         await query.answer()
 
     elif action == "mb_lblm":
         await edit_colored_msg(
             query.message.chat.id, query.message.id,
-            "🏷️ <b>আপনার ওয়েবসাইটের ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে, চাপ দিয়ে অন/অফ করুন)</i>",
+            "🏷️ <b>ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে, কোনোটিই অটো সিলেক্ট করা নেই)</i>",
             build_category_keyboard(task_id, task)
         )
         await query.answer()
@@ -605,7 +738,7 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
             lbls.append(cat)
         await edit_colored_msg(
             query.message.chat.id, query.message.id,
-            "🏷️ <b>আপনার ওয়েবসাইটের ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে, চাপ দিয়ে অন/অফ করুন)</i>",
+            "🏷️ <b>ক্যাটাগরি / Labels সিলেক্ট করুন:</b>\n<i>(সবুজ ✅ গুলো পোস্টে যুক্ত হবে)</i>",
             build_category_keyboard(task_id, task)
         )
         await query.answer(f"Updated: {cat}")
@@ -614,7 +747,7 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         STATES[uid] = {"task_id": task_id, "step": "waiting_custom_label"}
         await query.message.reply_text(
             "✏️ <b>ইচ্ছামতো ক্যাটাগরি/লেবেল লিখে পাঠান</b>\n"
-            "<i>(একাধিক হলে কমা দিয়ে লিখুন, যেমন: <code>Korean, Drama, 2025</code>):</i>",
+            "<i>(একাধিক হলে কমা দিয়ে লিখুন, যেমন: <code>Viral, Bangla, 2026</code>):</i>",
             parse_mode=ParseMode.HTML
         )
         await query.answer()
@@ -629,13 +762,24 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         if not st_l:
             await query.answer("❌ আগে /set_player দিয়ে Streamtape সেট করুন!", show_alert=True)
             return
-        STATES[uid] = {"task_id": task_id, "step": "waiting_st_video"}
-        await query.message.reply_text("🎬 <b>Streamtape-এ আপলোডের জন্য ভিডিও ফাইলটি পাঠান:</b>", parse_mode=ParseMode.HTML)
+        STATES[uid] = {"task_id": task_id, "step": "waiting_batch_videos"}
+        kb = [[{"text": "🔙 Back to Draft", "callback_data": f"mb_back|{task_id}", "style": "primary"}]]
+        await send_colored_msg(
+            query.message.chat.id,
+            "📤 <b>বাল্ক ভিডিও আপলোড চালু হয়েছে!</b>\n\n"
+            "এখন আপনার <b>সবগুলো ভিডিও (১টা, ৫টা বা ১০টা) একসাথে ফরওয়ার্ড করুন!</b> "
+            "বট অটোমেটিক একটার পর একটা আপলোড করে সবগুলো রেডি করে দেবে।",
+            kb
+        )
         await query.answer()
 
     elif action == "mb_emb":
         STATES[uid] = {"task_id": task_id, "step": "waiting_embed_url"}
-        await query.message.reply_text("🔗 <b>Embed Link (https://...) অথবা পুরো iframe কোডটি পেস্ট করে পাঠান:</b>", parse_mode=ParseMode.HTML)
+        await query.message.reply_text(
+            "🔗 <b>আপনার Embed Link বা iframe কোড পাঠান:</b>\n"
+            "<i>(একাধিক লিংক থাকলে প্রতি লাইনে একটি করে লিংক লিখে একসাথে পাঠাতে পারেন!)</i>",
+            parse_mode=ParseMode.HTML
+        )
         await query.answer()
 
     elif action == "mb_tg":
@@ -658,6 +802,9 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         await query.answer()
 
     elif action == "mb_done":
+        if task.get("queue_running"):
+            await query.answer("⏳ ভিডিও এখনো আপলোড হচ্ছে! শেষ হওয়া পর্যন্ত অপেক্ষা করুন।", show_alert=True)
+            return
         await query.answer("Generating Preview...")
         await generate_final_preview(client, query.message.chat.id, task_id, task)
         TASKS.pop(task_id, None)
@@ -716,12 +863,12 @@ async def admin_state_listener(client: Client, message: Message):
         info, err = await fetch_tmdb_data(message.text.strip(), tmdb_k)
         if not info:
             await st.delete()
-            kb = [[{"text": "⏭️ Manual Title & Poster", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
-            await send_colored_msg(message.chat.id, f"❌ {html.escape(err)}\n\nআবার সঠিক নাম দিন অথবা Manual বাটনে চাপুন:", kb)
+            kb = [[{"text": "🔥 Viral / Custom Post (No TMDB)", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
+            await send_colored_msg(message.chat.id, f"❌ {html.escape(err)}\n\nআবার সঠিক নাম দিন অথবা কাস্টম বাটনে চাপুন:", kb)
             return
 
         task.update(info)
-        task["labels"] = [g.strip() for g in info.get("genre", "").split(",") if g.strip()]
+        task["post_mode"] = "tabs"  # TMDB মুভির জন্য ডিফল্ট Tabs মোড (চাইলে পরিবর্তন করা যাবে)
         STATES.pop(uid, None)
         await st.delete()
         await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
@@ -743,7 +890,7 @@ async def admin_state_listener(client: Client, message: Message):
     elif step == "waiting_title" and message.text:
         task["title"] = message.text.strip()
         state["step"] = "waiting_poster"
-        await message.reply_text("🖼 <b>এবার মুভির পোস্টার (Photo) পাঠান অথবা ছবির URL দিন:</b>", parse_mode=ParseMode.HTML)
+        await message.reply_text("🖼 <b>ধাপ ২/২: পোস্টার (Photo) পাঠান অথবা ছবির URL দিন:</b>", parse_mode=ParseMode.HTML)
 
     elif step == "waiting_poster" and (message.photo or (message.text and message.text.startswith("http"))):
         if message.photo:
@@ -762,38 +909,16 @@ async def admin_state_listener(client: Client, message: Message):
         STATES.pop(uid, None)
         await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
 
-    elif step == "waiting_st_video" and (message.video or message.document):
-        st_l, st_k = await get_streamtape_creds()
-        media = message.video or message.document
-        fname = getattr(media, "file_name", "video.mp4") or "video.mp4"
-        snum = len(task["embeds"]) + 1
-        st = await message.reply_text(f"📥 <b>ভিডিও {snum} ডাউনলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-
-        fpath = None
-        try:
-            fpath = await download_with_progress(message, st, f"📥 ভিডিও {snum} ডাউনলোড হচ্ছে...")
-            await st.edit_text(f"☁️ <b>ভিডিও {snum} Streamtape-এ আপলোড শুরু হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-            fid = await upload_to_streamtape(
-                fpath, fname, st_l, st_k,
-                status_msg=st,
-                label=f"☁️ ভিডিও {snum} Streamtape-এ আপলোড হচ্ছে..."
-            )
-            if fid:
-                task["embeds"].append({"url": f"https://streamta.pe/e/{fid}", "label": f"Server {snum} (HD)"})
-                STATES.pop(uid, None)
-                await st.delete()
-                await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
-            else:
-                await st.edit_text("❌ আপলোড ব্যর্থ হয়েছে! Streamtape API Key চেক করুন।")
-        except Exception as e:
-            await st.edit_text(f"❌ এরর হয়েছে: {html.escape(str(e))}", parse_mode=ParseMode.HTML)
-        finally:
-            if fpath and os.path.exists(fpath):
-                os.remove(fpath)
+    elif step == "waiting_batch_videos" and (message.video or message.document):
+        task.setdefault("queue", []).append(message)
+        if not task.get("queue_running"):
+            task["queue_running"] = True
+            asyncio.create_task(process_batch_queue(client, message.chat.id, uid, task_id))
 
     elif step == "waiting_embed_url" and message.text:
-        snum = len(task["embeds"]) + 1
-        task["embeds"].append({"url": message.text.strip(), "label": f"Server {snum} (HD)"})
+        lines = [ln.strip() for ln in message.text.splitlines() if ln.strip()]
+        for ln in lines:
+            task["embeds"].append({"url": ln})
         STATES.pop(uid, None)
         await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
 
