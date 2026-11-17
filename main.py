@@ -124,12 +124,16 @@ async def preview_route(request):
     @media (min-width: 640px) {{ .screenshots-grid {{ grid-template-columns: repeat(4, 1fr); }} }}
     .screenshots-grid img {{ width: 100%; height: 110px; object-fit: cover; border-radius: 6px; }}
     .download-box {{ background: #0b0d13; border: 1px solid #00ff88; border-radius: 12px; padding: 18px; text-align: center; margin-top: 20px; }}
+    .vertical-videos-list {{ display: flex; flex-direction: column; gap: 18px; margin-bottom: 18px; text-align: left; }}
+    .vertical-video-item {{ background: #151924; padding: 12px; border-radius: 10px; border: 1px solid #232938; }}
+    .vertical-video-item h4 {{ font-size: 15px; margin-bottom: 10px; color: #e50914; }}
     .embed-tabs {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 10px; }}
     .embed-tab-btn {{ background: #151924; color: #fff; border: 1px solid #232938; padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; }}
     .embed-tab-btn.active {{ background: #e50914; border-color: #e50914; }}
     .dl-buttons {{ display: flex; flex-direction: column; gap: 10px; max-width: 400px; margin: 0 auto; }}
     .dl-btn {{ display: block; padding: 12px; border-radius: 8px; background: #e50914; color: #fff; text-decoration: none; font-weight: 600; font-size: 14px; }}
     .dl-btn.alt {{ background: #2563eb; }}
+    .dl-btn.rgb {{ background: linear-gradient(90deg, #ff0055, #ff8800, #00ccff, #aa00ff); }}
   </style>
 </head>
 <body>
@@ -142,7 +146,7 @@ async def preview_route(request):
   </div>
 
   <div class="preview-container">
-    <div class="lbl-box"><strong>Suggested Blogger Labels:</strong> {labels}</div>
+    <div class="lbl-box"><strong>Suggested Blogger Labels:</strong> {labels or "None"}</div>
     {raw_html}
   </div>
 
@@ -160,14 +164,26 @@ async def preview_route(request):
     }}
     function loadThemeEmbed(btn) {{
       var raw = btn.getAttribute('data-embed').trim();
-      var box = document.querySelector('.embed-player-frame');
+      var sec = btn.closest('.embed-section');
+      var box = sec ? sec.querySelector('.embed-player-frame') : document.querySelector('.embed-player-frame');
       if (!box || !raw) return;
       document.querySelectorAll('.embed-tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      box.innerHTML = raw.indexOf('<iframe') > -1 ? raw : '<iframe src="' + raw + '" allowfullscreen="true"></iframe>';
+      box.innerHTML = raw.indexOf('<iframe') > -1 ? raw : '<iframe src="' + raw + '" allowfullscreen="true" frameborder="0" scrolling="no"></iframe>';
     }}
-    var first = document.querySelector('.embed-tab-btn');
-    if (first) loadThemeEmbed(first);
+    var frames = document.querySelectorAll('.embed-player-frame[data-embed]');
+    if (frames.length > 0) {{
+      frames.forEach(function(fr) {{
+        var raw = fr.getAttribute('data-embed').trim();
+        if (!raw.startsWith('http') && raw.indexOf('<iframe') === -1) {{
+          try {{ raw = atob(raw); }} catch(e) {{}}
+        }}
+        fr.innerHTML = raw.indexOf('<iframe') > -1 ? raw : '<iframe src="' + raw + '" loading="lazy" allowfullscreen="true" frameborder="0" scrolling="no"></iframe>';
+      }});
+    }} else {{
+      var first = document.querySelector('.embed-tab-btn');
+      if (first) loadThemeEmbed(first);
+    }}
   </script>
 </body>
 </html>"""
@@ -194,7 +210,7 @@ async def setup_bot_commands(bot: Client):
         scope=BotCommandScopeAllPrivateChats()
     )
     admin_cmds = [
-        BotCommand("post", "Create New Movie Post"),
+        BotCommand("post", "Create New Post"),
         BotCommand("player", "Upload Video to Streamtape"),
         BotCommand("settings", "View Bot Settings"),
         BotCommand("set_tmdb", "Set TMDB API Key"),
