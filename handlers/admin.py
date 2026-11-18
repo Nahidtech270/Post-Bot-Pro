@@ -13,7 +13,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.types import Message, CallbackQuery
 import config
 from database import db, get_setting, set_setting
-from tmdb import fetch_tmdb_data
+from tmdb import search_tmdb, fetch_tmdb_details
 from tg_api import send_colored_msg, edit_colored_msg
 
 ADMIN_FILTER = filters.user(config.ADMIN_IDS) if config.ADMIN_IDS else filters.private
@@ -220,7 +220,6 @@ def build_draft_keyboard(task_id: str, task: dict):
         [{"text": f"🎬 Add Bulk Videos to Streamtape ({emb_c})", "callback_data": f"mb_st|{task_id}", "style": "danger"}],
         [{"text": f"🔗 Paste Embed URL / iframe ({emb_c})", "callback_data": f"mb_emb|{task_id}", "style": "primary"}],
     ]
-    # মুভি মোডে থাকলে ডাউনলোড বাটনের অপশন দেখাবে (ভাইরাল ভার্টিকাল মোডে নয়)
     if mode != "vertical" or dl_c > 0:
         rows.append([{"text": f"📁 Add Telegram File ({dl_c})", "callback_data": f"mb_tg|{task_id}", "style": "primary"}])
 
@@ -302,7 +301,6 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
     trailer_id = task.get("trailer_id", "")
     screenshots = task.get("screenshots", [])
 
-    # শুধু যেসব তথ্য আছে সেগুলোই Hero Box-এ দেখাবে
     info_items = f'    <li><strong>Title:</strong> {title}</li>\n'
     if language:
         info_items += f'    <li><strong>Language:</strong> {html.escape(language)}</li>\n'
@@ -335,7 +333,6 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
         ss_imgs = "".join([f'<img src="{s}" alt="{title} Screenshot" loading="lazy"/>' for s in screenshots])
         ss_html = f'<h3>&#128248; Screenshots</h3>\n<div class="screenshots-grid">{ss_imgs}</div>\n\n'
 
-    # Embed Videos (Vertical List vs Server Tabs)
     embed_section_html = ""
     embeds = task.get("embeds", [])
     mode = task.get("post_mode", "vertical")
@@ -373,7 +370,6 @@ async def generate_final_preview(client: Client, chat_id: int, task_id: str, tas
                 '</div>\n'
             )
 
-    # Download Buttons (Only if added)
     dl_section_html = ""
     downloads = task.get("downloads", [])
     if downloads:
@@ -603,7 +599,8 @@ async def cmd_new_post(client: Client, message: Message):
         await send_colored_msg(
             message.chat.id,
             "🎬 <b>নতুন পোস্ট তৈরি শুরু হয়েছে!</b>\n\n"
-            "• <b>মুভি/সিরিজ হলে:</b> TMDB নাম বা ID লিখে পাঠান (যেমন: <code>RRR</code> বা <code>tv:1399</code>)\n"
+            "• <b>মুভি/সিরিজ হলে:</b> নাম, <b>TMDB লিংক</b>, অথবা <b>IMDb লিংক/ID</b> পাঠান\n"
+            "  <i>(যেমন: <code>RRR</code> বা <code>https://www.imdb.com/title/tt8178634/</code>)</i>\n"
             "• <b>ভাইরাল বা কাস্টম ভিডিও হলে:</b> নিচের লাল বাটনে চাপ দিন 👇",
             kb
         )
@@ -657,7 +654,7 @@ async def cmd_player_upload(client: Client, message: Message):
             await send_colored_msg(
                 message.chat.id,
                 "✅ <b>Streamtape আপলোড সম্পন্ন!</b>\n\n"
-                "🎞 মুভি হলে <b>নাম বা TMDB ID</b> পাঠান, আর ভাইরাল/কাস্টম ভিডিও হলে নিচের বাটনে চাপুন:",
+                "🎞 মুভি হলে <b>নাম, TMDB লিংক বা IMDb লিংক</b> পাঠান, আর ভাইরাল/কাস্টম ভিডিও হলে নিচের বাটনে চাপুন:",
                 kb
             )
         else:
@@ -687,6 +684,20 @@ async def admin_callbacks(client: Client, query: CallbackQuery):
         STATES[uid] = {"task_id": task_id, "step": "waiting_title"}
         await query.message.reply_text("📝 <b>ধাপ ১/২: পোস্টের টাইটেল লিখে পাঠান:</b>", parse_mode=ParseMode.HTML)
         await query.answer()
+
+    elif action == "mb_pick":
+        m_type = parts[2]
+        m_id = parts[3]
+        tmdb_k = await get_tmdb_key()
+        await query.answer("Loading movie details...")
+        info, err = await fetch_tmdb_details(m_type, m_id, tmdb_k)
+        if err:
+            await query.message.reply_text(f"❌ {html.escape(err)}", parse_mode=ParseMode.HTML)
+            return
+        task.update(info)
+        task["post_mode"] = "tabs"
+        STATES.pop(uid, None)
+        await edit_colored_msg(query.message.chat.id, query.message.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
 
     elif action == "mb_mode":
         task["post_mode"] = "tabs" if task.get("post_mode", "vertical") == "vertical" else "vertical"
@@ -859,19 +870,43 @@ async def admin_state_listener(client: Client, message: Message):
 
     if step == "waiting_tmdb" and message.text:
         tmdb_k = await get_tmdb_key()
-        st = await message.reply_text("🔍 <b>TMDB থেকে তথ্য আনা হচ্ছে...</b>", parse_mode=ParseMode.HTML)
-        info, err = await fetch_tmdb_data(message.text.strip(), tmdb_k)
-        if not info:
+        st = await message.reply_text("🔍 <b>TMDB/IMDb-তে খোঁজা হচ্ছে...</b>", parse_mode=ParseMode.HTML)
+        mode, data, err = await search_tmdb(message.text.strip(), tmdb_k)
+
+        if err:
             await st.delete()
             kb = [[{"text": "🔥 Viral / Custom Post (No TMDB)", "callback_data": f"mb_manual|{task_id}", "style": "danger"}]]
-            await send_colored_msg(message.chat.id, f"❌ {html.escape(err)}\n\nআবার সঠিক নাম দিন অথবা কাস্টম বাটনে চাপুন:", kb)
+            await send_colored_msg(message.chat.id, f"❌ {html.escape(err)}\n\nআবার নাম বা লিংক দিন, অথবা কাস্টম বাটনে চাপুন:", kb)
             return
 
-        task.update(info)
-        task["post_mode"] = "tabs"  # TMDB মুভির জন্য ডিফল্ট Tabs মোড (চাইলে পরিবর্তন করা যাবে)
-        STATES.pop(uid, None)
+        if mode == "direct":
+            task.update(data)
+            task["post_mode"] = "tabs"
+            STATES.pop(uid, None)
+            await st.delete()
+            await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+            return
+
+        # mode == "choices": একাধিক মুভির সাজেশন বাটন দেখাবে
         await st.delete()
-        await send_colored_msg(message.chat.id, draft_summary_text(task), build_draft_keyboard(task_id, task))
+        kb = []
+        for c in data:
+            icon = "📺" if c["media_type"] == "tv" else "🎬"
+            adult_mark = " 🔞" if c["adult"] else ""
+            short_t = c["title"][:32] + "..." if len(c["title"]) > 32 else c["title"]
+            btn_txt = f"{icon} {short_t} ({c['year']}){adult_mark}"
+            kb.append([{
+                "text": btn_txt,
+                "callback_data": f"mb_pick|{task_id}|{c['media_type']}|{c['id']}",
+                "style": "danger" if c["adult"] else "primary"
+            }])
+        kb.append([{"text": "🔥 None of these (Manual / Viral)", "callback_data": f"mb_manual|{task_id}", "style": "success"}])
+
+        await send_colored_msg(
+            message.chat.id,
+            "🔎 <b>একাধিক ফলাফল পাওয়া গেছে!</b>\n👇 আপনার সঠিক মুভি/সিরিজটি বাটনে চাপ দিয়ে সিলেক্ট করুন (অথবা সরাসরি নতুন নাম/লিংক পাঠান):",
+            kb
+        )
 
     elif step == "waiting_custom_lang" and message.text:
         task["language"] = message.text.strip()
